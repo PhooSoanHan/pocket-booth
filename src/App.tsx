@@ -36,6 +36,11 @@ function App() {
   const [isCapturing, setIsCapturing] = useState(false)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [shotNumber, setShotNumber] = useState(0)
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>(
+  'user',
+  )
+  const [isMirrored, setIsMirrored] = useState(true)
+  const [cameraResolution, setCameraResolution] = useState('')
 
   const captureRunningRef = useRef(false)
   const captureIdRef = useRef(0)
@@ -44,6 +49,10 @@ function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const cameraRequestRef = useRef(0)
+  const [stripColour, setStripColour] = useState<string | null>(null)
+  const [stripCaption, setStripCaption] = useState('little moments ♡')
+  const [stripIncludeDate, setStripIncludeDate] = useState(true)
+  const [sessionDate, setSessionDate] = useState('')
 
   const activeTheme = themes.find((theme) => theme.id === selectedTheme)!
 
@@ -61,6 +70,23 @@ function App() {
     }
   }, [screen])
 
+  useEffect(() => {
+    const hasSession = isCapturing || photos.length > 0
+
+    if (!hasSession) return
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [isCapturing, photos.length])
+
   function openCameraScreen() {
     setCameraReady(false)
     setCameraLoading(false)
@@ -68,24 +94,45 @@ function App() {
     setScreen('camera')
   }
 
-  async function enableCamera() {
-    if (cameraLoading) return
+  async function enableCamera(
+    requestedFacing: 'user' | 'environment' = facingMode,
+  ) {
+    if (
+      cameraLoading ||
+      captureRunningRef.current ||
+      capturedPhotosRef.current.length >= frameCount + 2
+    ) {
+      return
+    }
 
     const requestId = ++cameraRequestRef.current
 
     setCameraLoading(true)
+    setCameraReady(false)
     setCameraError('')
+    setCameraResolution('')
+
+    // Release the current camera before opening the other one.
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+
+    let openedStream: MediaStream | null = null
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera access is unavailable in this browser.')
+        throw new Error('Camera access is unavailable.')
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      openedStream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: 'user',
-          width: { ideal: 1920 },
-          height: { ideal: 1440 },
+          facingMode: { ideal: requestedFacing },
+          width: { ideal: 3840 },
+          height: { ideal: 2880 },
+          aspectRatio: { ideal: 4 / 3 },
         },
         audio: false,
       })
@@ -93,22 +140,50 @@ function App() {
       const video = videoRef.current
 
       if (requestId !== cameraRequestRef.current || !video) {
-        stream.getTracks().forEach((track) => track.stop())
+        openedStream.getTracks().forEach((track) => track.stop())
         return
       }
 
-      streamRef.current = stream
-      video.srcObject = stream
+      streamRef.current = openedStream
+      video.srcObject = openedStream
 
       await video.play()
 
-      if (requestId === cameraRequestRef.current) {
-        setCameraReady(true)
+      if (requestId !== cameraRequestRef.current) {
+        openedStream.getTracks().forEach((track) => track.stop())
+        return
       }
+
+      const track = openedStream.getVideoTracks()[0]
+      const actualFacing = track.getSettings().facingMode
+
+      const resolvedFacing =
+        actualFacing === 'environment'
+          ? 'environment'
+          : actualFacing === 'user'
+            ? 'user'
+            : requestedFacing
+
+      setFacingMode(resolvedFacing)
+      setIsMirrored(resolvedFacing === 'user')
+
+      const cropWidth = Math.min(
+        video.videoWidth,
+        video.videoHeight * (4 / 3),
+      )
+      const cropHeight = cropWidth * (3 / 4)
+
+      setCameraResolution(
+        `Camera: ${video.videoWidth} × ${video.videoHeight} · ` +
+        `Photo: ${Math.round(cropWidth)} × ${Math.round(cropHeight)}`,
+      )
+
+      setCameraReady(true)
     } catch (error) {
+      openedStream?.getTracks().forEach((track) => track.stop())
+
       if (requestId !== cameraRequestRef.current) return
 
-      streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = null
 
       const name = error instanceof Error ? error.name : ''
@@ -117,8 +192,8 @@ function App() {
         name === 'NotAllowedError'
           ? 'Camera permission was blocked. Allow access in your browser settings, then try again.'
           : name === 'NotFoundError'
-            ? 'No camera was found. Try a device with a webcam or phone camera.'
-            : 'Could not open the camera. Check whether another app is using it, then try again.',
+            ? 'No camera was found on this device.'
+            : 'Could not open the camera. Close other apps using it, then try again.',
       )
     } finally {
       if (requestId === cameraRequestRef.current) {
@@ -166,9 +241,11 @@ function App() {
       throw new Error('Could not prepare the photo.')
     }
 
-    // Match the mirrored selfie preview.
-    context.translate(canvas.width, 0)
-    context.scale(-1, 1)
+    // Mirror selfies, but keep rear-camera photos unmirrored.
+    if (isMirrored) {
+      context.translate(canvas.width, 0)
+      context.scale(-1, 1)
+    }
 
     context.drawImage(
       video,
@@ -194,6 +271,10 @@ function App() {
     captureRunningRef.current = true
     setIsCapturing(true)
     setCameraError('')
+
+    if (capturedPhotosRef.current.length === 0) {
+      setSessionDate(new Date().toLocaleDateString('en-GB'))
+    }
 
     try {
       // If the camera was interrupted, continue only the missing shots.
@@ -441,7 +522,11 @@ function App() {
                 autoPlay
                 playsInline
                 muted
-                className={cameraReady ? 'camera-video' : 'camera-video hidden'}
+                className={[
+                  'camera-video',
+                  !cameraReady ? 'hidden' : '',
+                  isMirrored ? 'mirrored' : '',
+                ].join(' ')}
               />
 
               {!cameraReady && (
@@ -466,6 +551,30 @@ function App() {
               )}
             </div>
 
+            {cameraReady && (
+              <div className="camera-tools">
+                <button
+                  className="camera-switch"
+                  onClick={() =>
+                    void enableCamera(
+                      facingMode === 'user' ? 'environment' : 'user',
+                    )
+                  }
+                  disabled={
+                    cameraLoading ||
+                    isCapturing ||
+                    photos.length > 0
+                  }
+                >
+                  ↻ Use {facingMode === 'user' ? 'rear' : 'front'} camera
+                </button>
+
+                <p className="camera-quality">
+                  {cameraResolution}
+                </p>
+              </div>
+            )}
+
             {cameraError && (
               <p className="camera-error" role="alert">
                 {cameraError}
@@ -475,8 +584,8 @@ function App() {
             {!cameraReady ? (
               <button
                 className="primary-button"
-                onClick={enableCamera}
-                disabled={cameraLoading}
+                onClick={() => void enableCamera()}
+                disabled={cameraLoading || isCapturing || photos.length > 0}
               >
                 {cameraLoading ? 'Opening camera…' : 'Enable camera ↗'}
               </button>
@@ -550,6 +659,10 @@ function App() {
                 ? 'Your favourites are picked. To swap one, unselect it first.'
                 : 'Tap a photo to select it. Tap again to unselect.'}
             </p>
+            <p className="small-note">
+              Your photos stay in this tab. Save your strip before refreshing
+              or closing the page.
+            </p>
             <button
               className="primary-button"
               onClick={() => setScreen('preview')}
@@ -561,8 +674,16 @@ function App() {
         )}
         {screen === 'preview' && (
           <PhotoStripPreview
-            photos={selectedPhotos.map((index) => photos[index])}
-            initialColour={activeTheme.colour}
+            photos={photos}
+            order={selectedPhotos}
+            setOrder={setSelectedPhotos}
+            colour={stripColour ?? activeTheme.colour}
+            setColour={setStripColour}
+            caption={stripCaption}
+            setCaption={setStripCaption}
+            includeDate={stripIncludeDate}
+            setIncludeDate={setStripIncludeDate}
+            sessionDate={sessionDate}
             onBack={() => setScreen('selection')}
           />
         )}

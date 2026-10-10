@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 
 type PhotoStripPreviewProps = {
   photos: string[]
-  initialColour: string
+  order: number[]
+  setOrder: Dispatch<SetStateAction<number[]>>
+  colour: string
+  setColour: (value: string) => void
+  caption: string
+  setCaption: (value: string) => void
+  includeDate: boolean
+  setIncludeDate: (value: boolean) => void
+  sessionDate: string
   onBack: () => void
 }
 
@@ -25,25 +34,26 @@ function loadImage(source: string): Promise<HTMLImageElement> {
 
 export default function PhotoStripPreview({
   photos,
-  initialColour,
+  order,
+  setOrder,
+  colour,
+  setColour,
+  caption,
+  setCaption,
+  includeDate,
+  setIncludeDate,
+  sessionDate,
   onBack,
 }: PhotoStripPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const [colour, setColour] = useState(initialColour)
-  const [caption, setCaption] = useState('little moments ♡')
-  const [includeDate, setIncludeDate] = useState(true)
-  const [sessionDate] = useState(() =>
-    new Date().toLocaleDateString('en-GB'),
-  )
-
-  const [order, setOrder] = useState(() =>
-    photos.map((_, index) => index),
-  )
-
   const [downloadUrl, setDownloadUrl] = useState('')
   const [isRendering, setIsRendering] = useState(true)
   const [error, setError] = useState('')
+  const [shareFile, setShareFile] = useState<File | null>(null)
+  const [canShareFile, setCanShareFile] = useState(false)
+  const [isSharing, setIsSharing] = useState(false)
+  const [shareError, setShareError] = useState('')
 
   const width = 1600
   const padding = 72
@@ -53,8 +63,8 @@ export default function PhotoStripPreview({
 
   const height =
     padding * 2 +
-    photos.length * photoHeight +
-    (photos.length - 1) * gap +
+    order.length * photoHeight +
+    (order.length - 1) * gap +
     220
 
   useEffect(() => {
@@ -65,6 +75,9 @@ export default function PhotoStripPreview({
       setIsRendering(true)
       setDownloadUrl('')
       setError('')
+      setShareFile(null)
+      setCanShareFile(false)
+      setShareError('')
 
       try {
         const images = await Promise.all(
@@ -146,6 +159,17 @@ export default function PhotoStripPreview({
 
         objectUrl = URL.createObjectURL(blob)
         setDownloadUrl(objectUrl)
+        const file = new File([blob], 'pocket-booth.png', {
+            type: 'image/png',
+            })
+
+            setShareFile(file)
+
+            setCanShareFile(
+            typeof navigator.share === 'function' &&
+            typeof navigator.canShare === 'function' &&
+            navigator.canShare({ files: [file] }),
+            )
       } catch {
         if (!cancelled) {
           setError('Could not prepare your strip. Try changing a colour.')
@@ -207,6 +231,33 @@ export default function PhotoStripPreview({
     link.click()
     link.remove()
   }
+
+  async function shareStrip() {
+    if (!shareFile || !canShareFile || isRendering || isSharing) {
+        return
+    }
+
+    setShareError('')
+    setIsSharing(true)
+
+    try {
+        await navigator.share({
+        files: [shareFile],
+        })
+    } catch (error) {
+        // Closing the share sheet is normal, not an error.
+        const wasCancelled =
+        error instanceof Error && error.name === 'AbortError'
+
+        if (!wasCancelled) {
+        setShareError(
+            'Sharing could not open. You can still use Download photo strip.',
+        )
+        }
+    } finally {
+        setIsSharing(false)
+    }
+    }
 
   return (
     <section className="theme-screen">
@@ -313,6 +364,22 @@ export default function PhotoStripPreview({
             </p>
           )}
 
+          {canShareFile && (
+            <button
+                className="primary-button share-button"
+                onClick={() => void shareStrip()}
+                disabled={isRendering || isSharing || !shareFile}
+            >
+                {isSharing ? 'Sharing…' : 'Save / Share image ↗'}
+            </button>
+            )}
+
+            {shareError && (
+            <p className="camera-error" role="alert">
+                {shareError}
+            </p>
+            )}
+
           <button
             className="primary-button download-button"
             onClick={downloadStrip}
@@ -320,6 +387,13 @@ export default function PhotoStripPreview({
           >
             {isRendering ? 'Preparing your strip…' : 'Download photo strip ↓'}
           </button>
+
+          {canShareFile && (
+            <p className="small-note">
+                To save to Photos on iPhone, open Save / Share image
+                and look for Save Image.
+            </p>
+            )}
 
           <p className="small-note">
             {width} × {height} pixels · PNG
