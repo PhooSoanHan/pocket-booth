@@ -1,0 +1,576 @@
+import { useEffect, useRef, useState } from 'react'
+import PhotoStripPreview from './PhotoStripPreview'
+
+const themes = [
+  {
+    id: 'butter',
+    name: 'Butter Days',
+    description: 'Warm, soft, and a little nostalgic.',
+    colour: '#f5dfa0',
+  },
+  {
+    id: 'cherry',
+    name: 'Cherry Crush',
+    description: 'Pink, playful, and a little cheeky.',
+    colour: '#efb8c5',
+  },
+  {
+    id: 'midnight',
+    name: 'After Hours',
+    description: 'Black and white. All the feeling.',
+    colour: '#d5d4ce',
+  },
+]
+
+function App() {
+  const [screen, setScreen] = useState<
+  'home' | 'themes' | 'frames' | 'camera' | 'selection' | 'preview'>('home')
+
+  const [selectedTheme, setSelectedTheme] = useState('butter')
+  const [frameCount, setFrameCount] = useState<2 | 4>(4)
+  const [cameraReady, setCameraReady] = useState(false)
+  const [cameraLoading, setCameraLoading] = useState(false)
+  const [cameraError, setCameraError] = useState('')
+  const [photos, setPhotos] = useState<string[]>([])
+  const [selectedPhotos, setSelectedPhotos] = useState<number[]>([])
+  const [isCapturing, setIsCapturing] = useState(false)
+  const [countdown, setCountdown] = useState<number | null>(null)
+  const [shotNumber, setShotNumber] = useState(0)
+
+  const captureRunningRef = useRef(false)
+  const captureIdRef = useRef(0)
+  const capturedPhotosRef = useRef<string[]>([])
+
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const cameraRequestRef = useRef(0)
+
+  const activeTheme = themes.find((theme) => theme.id === selectedTheme)!
+
+  useEffect(() => {
+    if (screen !== 'camera') return
+
+    return () => {
+      captureIdRef.current += 1
+      captureRunningRef.current = false
+      cameraRequestRef.current += 1
+
+      // Release the camera so its indicator turns off.
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+  }, [screen])
+
+  function openCameraScreen() {
+    setCameraReady(false)
+    setCameraLoading(false)
+    setCameraError('')
+    setScreen('camera')
+  }
+
+  async function enableCamera() {
+    if (cameraLoading) return
+
+    const requestId = ++cameraRequestRef.current
+
+    setCameraLoading(true)
+    setCameraError('')
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera access is unavailable in this browser.')
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 1920 },
+          height: { ideal: 1440 },
+        },
+        audio: false,
+      })
+
+      const video = videoRef.current
+
+      if (requestId !== cameraRequestRef.current || !video) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
+
+      streamRef.current = stream
+      video.srcObject = stream
+
+      await video.play()
+
+      if (requestId === cameraRequestRef.current) {
+        setCameraReady(true)
+      }
+    } catch (error) {
+      if (requestId !== cameraRequestRef.current) return
+
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+
+      const name = error instanceof Error ? error.name : ''
+
+      setCameraError(
+        name === 'NotAllowedError'
+          ? 'Camera permission was blocked. Allow access in your browser settings, then try again.'
+          : name === 'NotFoundError'
+            ? 'No camera was found. Try a device with a webcam or phone camera.'
+            : 'Could not open the camera. Check whether another app is using it, then try again.',
+      )
+    } finally {
+      if (requestId === cameraRequestRef.current) {
+        setCameraLoading(false)
+      }
+    }
+  }
+
+  function wait(milliseconds: number) {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, milliseconds)
+    })
+  }
+
+  function capturePhoto(): string {
+    const video = videoRef.current
+    const track = streamRef.current?.getVideoTracks()[0]
+
+    if (
+      !video ||
+      video.readyState < 2 ||
+      !video.videoWidth ||
+      !track ||
+      track.readyState !== 'live' ||
+      track.muted
+    ) {
+      throw new Error('Camera is not ready.')
+    }
+
+    const canvas = document.createElement('canvas')
+
+    // Crop the source to match our 4:3 camera preview.
+    const cropWidth = Math.min(
+      video.videoWidth,
+      video.videoHeight * (4 / 3),
+    )
+    const cropHeight = cropWidth * (3 / 4)
+
+    canvas.width = Math.round(cropWidth)
+    canvas.height = Math.round(cropHeight)
+
+    const context = canvas.getContext('2d')
+
+    if (!context) {
+      throw new Error('Could not prepare the photo.')
+    }
+
+    // Match the mirrored selfie preview.
+    context.translate(canvas.width, 0)
+    context.scale(-1, 1)
+
+    context.drawImage(
+      video,
+      (video.videoWidth - cropWidth) / 2,
+      (video.videoHeight - cropHeight) / 2,
+      cropWidth,
+      cropHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    )
+
+    return canvas.toDataURL('image/jpeg', 0.97)
+  }
+
+  async function startSession() {
+    if (!cameraReady || captureRunningRef.current) return
+
+    const captureId = ++captureIdRef.current
+    const totalShots = frameCount + 2
+
+    captureRunningRef.current = true
+    setIsCapturing(true)
+    setCameraError('')
+
+    try {
+      // If the camera was interrupted, continue only the missing shots.
+      for (
+        let index = capturedPhotosRef.current.length;
+        index < totalShots;
+        index++
+      ) {
+        setShotNumber(index + 1)
+
+        for (let seconds = 5; seconds >= 1; seconds--) {
+          if (captureId !== captureIdRef.current) return
+
+          if (document.hidden) {
+            throw new Error('Keep the camera tab visible.')
+          }
+
+          setCountdown(seconds)
+          await wait(1000)
+        }
+
+        if (captureId !== captureIdRef.current) return
+
+        if (document.hidden) {
+          throw new Error('Keep the camera tab visible.')
+        }
+
+        const photo = capturePhoto()
+
+        capturedPhotosRef.current.push(photo)
+        setPhotos([...capturedPhotosRef.current])
+        setCountdown(null)
+
+        // A short "captured" beat before the next countdown.
+        await wait(350)
+      }
+
+      if (captureId === captureIdRef.current) {
+        setSelectedPhotos([])
+        setScreen('selection')
+      }
+    } catch {
+      if (captureId !== captureIdRef.current) return
+
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+
+      setCameraReady(false)
+      setCameraError(
+        'The camera session was interrupted. Your captured photos are kept. Enable the camera again to finish the remaining shots.',
+      )
+    } finally {
+      if (captureId === captureIdRef.current) {
+        captureRunningRef.current = false
+        setIsCapturing(false)
+        setCountdown(null)
+      }
+    }
+  }
+
+  function togglePhoto(index: number) {
+    setSelectedPhotos((current) => {
+      if (current.includes(index)) {
+        return current.filter((photoIndex) => photoIndex !== index)
+      }
+
+      if (current.length >= frameCount) {
+        return current
+      }
+
+      return [...current, index]
+    })
+  }
+
+  return (
+    <div className="app">
+      <header className="header">
+        <span className="logo">✿ pocket booth</span>
+        <span className="edition">VOL. 01</span>
+      </header>
+
+      <main>
+        {screen === 'home' && (
+          <section className="home">
+            <span className="eyebrow">YOUR BOOTH. ANYWHERE.</span>
+
+            <h1>
+              A little chaos.
+              <br />
+              <em>A little memory.</em>
+            </h1>
+
+            <p className="description">
+              Your people, your place, and five seconds to pose.
+              Turn wherever you are into a photobooth.
+            </p>
+
+            <button
+              className="primary-button"
+              onClick={() => setScreen('themes')}
+            >
+              Step into the booth ↗
+            </button>
+
+            <p className="small-note">
+              No retakes. Just you, as you are.
+            </p>
+          </section>
+        )}
+
+        {screen === 'themes' && (
+          <section className="theme-screen">
+            <button
+              className="back-button"
+              onClick={() => setScreen('home')}
+            >
+              ← Back
+            </button>
+
+            <span className="eyebrow">01 / PICK YOUR MOOD</span>
+            <h2>What’s your kind of cute?</h2>
+            <p className="description">
+              Same little moment. A different feeling.
+            </p>
+
+            <div className="theme-grid">
+              {themes.map((theme) => (
+                <button
+                  key={theme.id}
+                  className={`theme-card ${
+                    selectedTheme === theme.id ? 'selected' : ''
+                  }`}
+                  onClick={() => setSelectedTheme(theme.id)}
+                  aria-pressed={selectedTheme === theme.id}
+                >
+                  <div
+                    className="theme-preview"
+                    style={{ backgroundColor: theme.colour }}
+                  >
+                    <div className="mini-strip" aria-hidden="true">
+                      <div>✿</div>
+                      <div>♡</div>
+                      <div>✧</div>
+                      <span>little moments</span>
+                    </div>
+                  </div>
+
+                  <div className="theme-title">
+                    <h3>{theme.name}</h3>
+                    <span>
+                      {selectedTheme === theme.id ? '●' : '○'}
+                    </span>
+                  </div>
+
+                  <p>{theme.description}</p>
+                </button>
+              ))}
+            </div>
+            <button
+              className="primary-button"
+              onClick={() => setScreen('frames')}
+            >
+              Choose my frame →
+            </button>
+          </section>
+        )}
+        {screen === 'frames' && (
+          <section className="theme-screen">
+            <button
+              className="back-button"
+              onClick={() => setScreen('themes')}
+            >
+              ← Back
+            </button>
+
+            <span className="eyebrow">02 / PICK YOUR FRAME</span>
+            <h2>A little or a little more?</h2>
+
+            <p className="description">
+              We’ll take a few extra. You choose the ones to keep.
+            </p>
+
+            <div className="frame-grid">
+              {([2, 4] as const).map((count) => (
+                <button
+                  key={count}
+                  className={`frame-card ${
+                    frameCount === count ? 'selected' : ''
+                  }`}
+                  onClick={() => setFrameCount(count)}
+                  aria-pressed={frameCount === count}
+                >
+                  <div
+                    className="frame-example"
+                    style={{ backgroundColor: activeTheme.colour }}
+                    aria-hidden="true"
+                  >
+                    {Array.from({ length: count }, (_, index) => (
+                      <div key={index}>♡</div>
+                    ))}
+                  </div>
+
+                  <h3>{count} little moments</h3>
+                  <p>
+                    Take {count + 2} photos · keep {count}
+                  </p>
+                </button>
+              ))}
+            </div>
+
+            <p className="small-note">
+              Five seconds before every shot. No retakes, no overthinking.
+            </p>
+
+            <button
+              className="primary-button"
+              onClick={openCameraScreen}
+            >
+              Let’s get in position →
+            </button>
+          </section>
+        )}
+
+        {screen === 'camera' && (
+          <section className="theme-screen">
+            <button
+              className="back-button"
+              onClick={() => setScreen('frames')}
+              disabled={isCapturing || photos.length > 0}
+            >
+              ← Back
+            </button>
+
+            <span className="eyebrow">03 / YOUR LITTLE MOMENT</span>
+            <h2>Find your spot.</h2>
+
+            <p className="description">
+              {activeTheme.name} · We’ll take {frameCount + 2} photos,
+              and you’ll keep your favourite {frameCount}.
+            </p>
+
+            <div className="camera-preview">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={cameraReady ? 'camera-video' : 'camera-video hidden'}
+              />
+
+              {!cameraReady && (
+                <div className="camera-placeholder">
+                  <span>◎</span>
+                  <p>Your moment goes here.</p>
+                </div>
+              )}
+
+              {cameraReady && (
+                <span className="camera-status" role="status">
+                  {isCapturing
+                    ? `● PHOTO ${shotNumber} OF ${frameCount + 2}`
+                    : '● CAMERA READY'}
+                </span>
+              )}
+
+              {isCapturing && (
+                <div className="countdown-overlay" aria-hidden="true">
+                  {countdown ?? '✓'}
+                </div>
+              )}
+            </div>
+
+            {cameraError && (
+              <p className="camera-error" role="alert">
+                {cameraError}
+              </p>
+            )}
+
+            {!cameraReady ? (
+              <button
+                className="primary-button"
+                onClick={enableCamera}
+                disabled={cameraLoading}
+              >
+                {cameraLoading ? 'Opening camera…' : 'Enable camera ↗'}
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                onClick={startSession}
+                disabled={isCapturing}
+              >
+                {isCapturing
+                  ? 'Let the moment happen…'
+                  : photos.length > 0
+                    ? 'Continue remaining shots →'
+                    : 'Start our moment →'}
+              </button>
+            )}
+
+            <p className="small-note">
+              {isCapturing
+                ? 'Stay in this tab. The next photo happens automatically.'
+                : 'Get everyone in position. Your first shot starts after 5 seconds.'}
+            </p>
+          </section>
+        )}
+        {screen === 'selection' && (
+          <section className="theme-screen">
+            <span className="eyebrow">04 / PICK YOUR FAVOURITES</span>
+            <h2>Which moments feel like you?</h2>
+
+            <p className="description">
+              Choose {frameCount} from your {photos.length} photos.
+              The order you tap is the order on your strip.
+            </p>
+
+            <p className="selection-count" role="status">
+              {selectedPhotos.length} / {frameCount} selected
+            </p>
+
+            <div className="photo-grid">
+              {photos.map((photo, index) => {
+                const position = selectedPhotos.indexOf(index)
+                const isSelected = position !== -1
+
+                return (
+                  <button
+                    key={index}
+                    className={`photo-option ${
+                      isSelected ? 'selected' : ''
+                    }`}
+                    onClick={() => togglePhoto(index)}
+                    aria-pressed={isSelected}
+                    aria-label={`Photo ${index + 1}${
+                      isSelected ? `, selected position ${position + 1}` : ''
+                    }`}
+                  >
+                    <img
+                      src={photo}
+                      alt={`Your captured moment ${index + 1}`}
+                    />
+
+                    <span className="photo-badge">
+                      {isSelected ? position + 1 : '+'}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <p className="small-note">
+              {selectedPhotos.length === frameCount
+                ? 'Your favourites are picked. To swap one, unselect it first.'
+                : 'Tap a photo to select it. Tap again to unselect.'}
+            </p>
+            <button
+              className="primary-button"
+              onClick={() => setScreen('preview')}
+              disabled={selectedPhotos.length !== frameCount}
+            >
+              Make my photo strip →
+            </button>
+          </section>
+        )}
+        {screen === 'preview' && (
+          <PhotoStripPreview
+            photos={selectedPhotos.map((index) => photos[index])}
+            initialColour={activeTheme.colour}
+            onBack={() => setScreen('selection')}
+          />
+        )}
+      </main>
+
+      <footer>A LITTLE BOOTH. A LOT OF FEELING.</footer>
+    </div>
+  )
+}
+
+export default App
