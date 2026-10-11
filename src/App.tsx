@@ -1,32 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import PhotoStripPreview from './PhotoStripPreview'
-
-const themes = [
-  {
-    id: 'butter',
-    name: 'Butter Days',
-    description: 'Warm, soft, and a little nostalgic.',
-    colour: '#f5dfa0',
-  },
-  {
-    id: 'cherry',
-    name: 'Cherry Crush',
-    description: 'Pink, playful, and a little cheeky.',
-    colour: '#efb8c5',
-  },
-  {
-    id: 'midnight',
-    name: 'After Hours',
-    description: 'Black and white. All the feeling.',
-    colour: '#d5d4ce',
-  },
-]
+import ThemeFrame from './ThemeFrame'
+import { themes, getTheme } from './themes'
+import type { ThemeId } from './themes'
 
 function App() {
   const [screen, setScreen] = useState<
   'home' | 'themes' | 'frames' | 'camera' | 'selection' | 'preview'>('home')
 
-  const [selectedTheme, setSelectedTheme] = useState('butter')
+  const [selectedTheme, setSelectedTheme] = useState<ThemeId>('collectible')
   const [frameCount, setFrameCount] = useState<2 | 4>(4)
   const [cameraReady, setCameraReady] = useState(false)
   const [cameraLoading, setCameraLoading] = useState(false)
@@ -49,12 +31,11 @@ function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const cameraRequestRef = useRef(0)
-  const [stripColour, setStripColour] = useState<string | null>(null)
   const [stripCaption, setStripCaption] = useState('little moments ♡')
   const [stripIncludeDate, setStripIncludeDate] = useState(true)
   const [sessionDate, setSessionDate] = useState('')
 
-  const activeTheme = themes.find((theme) => theme.id === selectedTheme)!
+  const activeTheme = getTheme(selectedTheme)
 
   useEffect(() => {
     if (screen !== 'camera') return
@@ -384,7 +365,7 @@ function App() {
             </p>
           </section>
         )}
-
+        
         {screen === 'themes' && (
           <section className="theme-screen">
             <button
@@ -394,10 +375,11 @@ function App() {
               ← Back
             </button>
 
-            <span className="eyebrow">01 / PICK YOUR MOOD</span>
-            <h2>What’s your kind of cute?</h2>
+            <span className="eyebrow">01 / PICK YOUR WORLD</span>
+            <h2>Every memory has a mood.</h2>
             <p className="description">
-              Same little moment. A different feeling.
+              Explore five little worlds. Each one has a
+              2-photo and a 4-photo frame.
             </p>
 
             <div className="theme-grid">
@@ -410,16 +392,9 @@ function App() {
                   onClick={() => setSelectedTheme(theme.id)}
                   aria-pressed={selectedTheme === theme.id}
                 >
-                  <div
-                    className="theme-preview"
-                    style={{ backgroundColor: theme.colour }}
-                  >
-                    <div className="mini-strip" aria-hidden="true">
-                      <div>✿</div>
-                      <div>♡</div>
-                      <div>✧</div>
-                      <span>little moments</span>
-                    </div>
+                  <div className="theme-dual-preview">
+                    <ThemeFrame themeId={theme.id} count={2} />
+                    <ThemeFrame themeId={theme.id} count={4} />
                   </div>
 
                   <div className="theme-title">
@@ -433,31 +408,38 @@ function App() {
                 </button>
               ))}
             </div>
+
             <button
               className="primary-button"
               onClick={() => setScreen('frames')}
             >
-              Choose my frame →
+              Preview {activeTheme.name} →
             </button>
           </section>
         )}
+
         {screen === 'frames' && (
           <section className="theme-screen">
             <button
               className="back-button"
               onClick={() => setScreen('themes')}
             >
-              ← Back
+              ← Back to themes
             </button>
 
-            <span className="eyebrow">02 / PICK YOUR FRAME</span>
-            <h2>A little or a little more?</h2>
+            <span className="eyebrow">
+              02 / PREVIEW YOUR FRAME
+            </span>
+
+            <h2>{activeTheme.name}</h2>
 
             <p className="description">
-              We’ll take a few extra. You choose the ones to keep.
+              Choose the layout you love.
+              We'll capture two extra shots so you can
+              pick your favourite moments.
             </p>
 
-            <div className="frame-grid">
+            <div className="frame-grid frame-grid-themed">
               {([2, 4] as const).map((count) => (
                 <button
                   key={count}
@@ -467,17 +449,13 @@ function App() {
                   onClick={() => setFrameCount(count)}
                   aria-pressed={frameCount === count}
                 >
-                  <div
-                    className="frame-example"
-                    style={{ backgroundColor: activeTheme.colour }}
-                    aria-hidden="true"
-                  >
-                    {Array.from({ length: count }, (_, index) => (
-                      <div key={index}>♡</div>
-                    ))}
-                  </div>
+                  <ThemeFrame
+                    themeId={selectedTheme}
+                    count={count}
+                  />
 
                   <h3>{count} little moments</h3>
+
                   <p>
                     Take {count + 2} photos · keep {count}
                   </p>
@@ -486,14 +464,15 @@ function App() {
             </div>
 
             <p className="small-note">
-              Five seconds before every shot. No retakes, no overthinking.
+              Five seconds before every shot.
+              No individual retakes.
             </p>
 
             <button
               className="primary-button"
               onClick={openCameraScreen}
             >
-              Let’s get in position →
+              Use {frameCount}-photo frame →
             </button>
           </section>
         )}
@@ -677,8 +656,7 @@ function App() {
             photos={photos}
             order={selectedPhotos}
             setOrder={setSelectedPhotos}
-            colour={stripColour ?? activeTheme.colour}
-            setColour={setStripColour}
+            themeId={selectedTheme}
             caption={stripCaption}
             setCaption={setStripCaption}
             includeDate={stripIncludeDate}

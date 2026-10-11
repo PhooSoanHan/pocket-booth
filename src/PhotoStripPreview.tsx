@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
+import { getTheme } from './themes'
+import type { ThemeId } from './themes'
+import { frameLayouts } from './frameLayouts'
+import type { PhotoCount } from './frameLayouts'
 
 type PhotoStripPreviewProps = {
   photos: string[]
   order: number[]
   setOrder: Dispatch<SetStateAction<number[]>>
-  colour: string
-  setColour: (value: string) => void
+  themeId: ThemeId
   caption: string
   setCaption: (value: string) => void
   includeDate: boolean
@@ -14,14 +17,6 @@ type PhotoStripPreviewProps = {
   sessionDate: string
   onBack: () => void
 }
-
-const frameColours = [
-  { name: 'Butter', value: '#f5dfa0' },
-  { name: 'Cherry', value: '#efb8c5' },
-  { name: 'Paper', value: '#f8f4eb' },
-  { name: 'Sage', value: '#c6d3ba' },
-  { name: 'Lavender', value: '#cec2e5' },
-]
 
 function loadImage(source: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -36,8 +31,7 @@ export default function PhotoStripPreview({
   photos,
   order,
   setOrder,
-  colour,
-  setColour,
+  themeId,
   caption,
   setCaption,
   includeDate,
@@ -54,18 +48,10 @@ export default function PhotoStripPreview({
   const [canShareFile, setCanShareFile] = useState(false)
   const [isSharing, setIsSharing] = useState(false)
   const [shareError, setShareError] = useState('')
+  const [downloadWidth, setDownloadWidth] = useState(0)
+  const [downloadHeight, setDownloadHeight] = useState(0)
 
-  const width = 1600
-  const padding = 72
-  const gap = 32
-  const photoWidth = width - padding * 2
-  const photoHeight = photoWidth * (3 / 4)
-
-  const height =
-    padding * 2 +
-    order.length * photoHeight +
-    (order.length - 1) * gap +
-    220
+  const count = order.length as PhotoCount
 
   useEffect(() => {
     let cancelled = false
@@ -92,41 +78,85 @@ export default function PhotoStripPreview({
         if (!canvas || !context) {
           throw new Error('Could not prepare the strip.')
         }
+        
+        const theme = getTheme(themeId)
+        const layout = frameLayouts[themeId][count]
+
+        // Draw the illustrated artwork over the photos.
+        const overlay = await loadImage(theme.frames[count])
+
+        const width = 1600
+        const height = Math.round(
+          width * (overlay.naturalHeight / overlay.naturalWidth)
+        )
 
         canvas.width = width
         canvas.height = height
 
-        context.fillStyle = colour
+        setDownloadWidth(width)
+        setDownloadHeight(height)
+
+        context.fillStyle = theme.colour
         context.fillRect(0, 0, width, height)
+
         context.imageSmoothingEnabled = true
         context.imageSmoothingQuality = 'high'
 
+        // Draw the user's selected photos first.
         images.forEach((image, index) => {
-          const y = padding + index * (photoHeight + gap)
+          const window = layout.windows[index]
+
+          if (!window) return
+
+          // Convert relative coordinates into canvas pixels.
+          const photoX = window.x * width
+          const photoY = window.y * height
+          const photoWidth = window.width * width
+          const photoHeight = window.height * height
+
+          const scale = Math.max(
+            photoWidth / image.width,
+            photoHeight / image.height,
+          )
+
+          const sourceWidth = photoWidth / scale
+          const sourceHeight = photoHeight / scale
+
+          const sourceX = (image.width - sourceWidth) / 2
+          const sourceY = (image.height - sourceHeight) / 2
 
           context.drawImage(
             image,
-            padding,
-            y,
+            sourceX,
+            sourceY,
+            sourceWidth,
+            sourceHeight,
+            photoX,
+            photoY,
             photoWidth,
             photoHeight,
           )
         })
 
-        const lastPhotoBottom =
-          padding +
-          images.length * photoHeight +
-          (images.length - 1) * gap
+        if (cancelled) return
 
-        context.fillStyle = '#342e2b'
+        context.drawImage(
+          overlay,
+          0,
+          0,
+          width,
+          height,
+        )
+
+        // Draw the user's editable message and optional date.
         context.textAlign = 'center'
+        context.fillStyle = theme.ink
 
-        // Shrink long captions so they stay inside the frame.
-        let fontSize = 62
+        let fontSize = 55
         context.font = `${fontSize}px Georgia`
 
         while (
-          context.measureText(caption).width > photoWidth &&
+          context.measureText(caption).width > width - 180 &&
           fontSize > 20
         ) {
           fontSize -= 2
@@ -136,17 +166,17 @@ export default function PhotoStripPreview({
         context.fillText(
           caption,
           width / 2,
-          lastPhotoBottom + 100,
+          height - 190,
         )
 
-        context.font = '24px Arial'
-        context.fillText(
-          includeDate
-            ? `POCKET BOOTH  ·  ${sessionDate}`
-            : 'POCKET BOOTH',
-          width / 2,
-          lastPhotoBottom + 165,
-        )
+        if (includeDate) {
+          context.font = '28px Arial'
+          context.fillText(
+            sessionDate,
+            width / 2,
+            height - 110,
+          )
+        }
 
         const blob = await new Promise<Blob>((resolve, reject) => {
           canvas.toBlob((result) => {
@@ -172,7 +202,7 @@ export default function PhotoStripPreview({
             )
       } catch {
         if (!cancelled) {
-          setError('Could not prepare your strip. Try changing a colour.')
+          setError('Could not prepare your strip. Please try again.')
         }
       } finally {
         if (!cancelled) {
@@ -191,17 +221,14 @@ export default function PhotoStripPreview({
       }
     }
   }, [
-    photos,
-    order,
-    colour,
-    caption,
-    includeDate,
-    sessionDate,
-    width,
-    height,
-    photoWidth,
-    photoHeight,
-  ])
+      photos,
+      order,
+      themeId,
+      caption,
+      includeDate,
+      sessionDate,
+      count,
+    ])
 
   function movePhoto(position: number, direction: -1 | 1) {
     const destination = position + direction
@@ -269,7 +296,8 @@ export default function PhotoStripPreview({
       <h2>Your little memories, together.</h2>
 
       <p className="description">
-        A little colour. A few words. A moment to keep.
+        Your themed frame is ready.
+        Add a message, choose your date, and save the memory.
       </p>
 
       <div className="strip-editor">
@@ -282,25 +310,6 @@ export default function PhotoStripPreview({
         </div>
 
         <div className="strip-controls">
-          <fieldset className="editor-field">
-            <legend>Frame colour</legend>
-
-            <div className="colour-options">
-              {frameColours.map((frame) => (
-                <button
-                  key={frame.value}
-                  className={`colour-button ${
-                    colour === frame.value ? 'selected' : ''
-                  }`}
-                  style={{ backgroundColor: frame.value }}
-                  onClick={() => setColour(frame.value)}
-                  aria-label={frame.name}
-                  aria-pressed={colour === frame.value}
-                />
-              ))}
-            </div>
-          </fieldset>
-
           <div className="editor-field">
             <label htmlFor="strip-caption">A little message</label>
 
@@ -396,7 +405,7 @@ export default function PhotoStripPreview({
             )}
 
           <p className="small-note">
-            {width} × {height} pixels · PNG
+            {downloadWidth} × {downloadHeight} pixels · PNG
             <br />
             Save your strip before closing this tab.
           </p>
